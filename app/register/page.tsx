@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { PasswordInput } from "@/components/password-input";
 import { SocialLogin } from "@/components/social-login";
+import { createUserMetadata } from "@/lib/auth/user-metadata";
 import { supabase } from "@/lib/supabase/client";
 
 interface FormErrors {
@@ -84,9 +85,7 @@ export default function RegisterPage() {
       email: email.trim(),
       password,
       options: {
-        data: {
-          username: username.trim(),
-        },
+        data: createUserMetadata(username),
       },
     });
 
