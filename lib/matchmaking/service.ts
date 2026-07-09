@@ -7,6 +7,7 @@ import {
   type MatchResponse,
   type MatchRpcResult,
 } from "./contracts";
+import { clearCachedMatchStatus, getCachedMatchStatus, setCachedMatchStatus } from "./status-cache";
 import { createSupabaseAdminClient, createSupabaseUserClient } from "../supabase/server";
 
 type AuthenticatedUser = {
@@ -40,6 +41,11 @@ export async function getMatchStatusFromRequest(request: Request): Promise<Match
   const token = requireBearerToken(request);
   const user = await authenticateBearerToken(token);
   const { ticketId } = parseStatusSearchParams(new URL(request.url).searchParams);
+  const cached = getCachedMatchStatus(user.id, ticketId);
+  if (cached) {
+    return cached;
+  }
+
   const admin = createSupabaseAdminClient();
 
   const { data, error } = await admin.rpc("get_match_status", {
@@ -51,7 +57,9 @@ export async function getMatchStatusFromRequest(request: Request): Promise<Match
     throw new Error(error.message);
   }
 
-  return serializeMatchRpcResult(firstRpcResult(data));
+  const response = serializeMatchRpcResult(firstRpcResult(data));
+  setCachedMatchStatus(user.id, ticketId, response);
+  return response;
 }
 
 export async function cancelMatchFromRequest(request: Request): Promise<{ canceled: boolean; ticketId: string }> {
@@ -59,6 +67,7 @@ export async function cancelMatchFromRequest(request: Request): Promise<{ cancel
   const user = await authenticateBearerToken(token);
   const { ticketId } = parseCancelMatchBody(await request.json());
   const admin = createSupabaseAdminClient();
+  clearCachedMatchStatus(user.id, ticketId);
 
   const { data, error } = await admin.rpc("cancel_random_match", {
     p_user_id: user.id,
@@ -69,6 +78,7 @@ export async function cancelMatchFromRequest(request: Request): Promise<{ cancel
     throw new Error(error.message);
   }
 
+  clearCachedMatchStatus(user.id, ticketId);
   return { canceled: Boolean(data), ticketId };
 }
 
