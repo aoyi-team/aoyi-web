@@ -132,9 +132,16 @@ function mapReadyRelaySession(
     throw new Error("Edgegap relay session is not ready.");
   }
 
-  const hostUser = session.session_users.find((user) => user.ip_address === input.hostIp);
-  const guestUser = input.hostIp === input.guestIp
-    ? session.session_users.find((user) => user !== hostUser && user.ip_address === input.guestIp)
+  const samePublicIp = input.hostIp === input.guestIp;
+  const sharedIpUsers = samePublicIp
+    ? session.session_users.filter((user) => user.ip_address === input.hostIp)
+    : [];
+  const sharedIpUser = sharedIpUsers[sharedIpUsers.length - 1];
+  const hostUser = samePublicIp
+    ? sharedIpUser
+    : session.session_users.find((user) => user.ip_address === input.hostIp);
+  const guestUser = samePublicIp
+    ? sharedIpUser
     : session.session_users.find((user) => user.ip_address === input.guestIp);
   if (!hostUser?.authorization_token || !guestUser?.authorization_token) {
     throw new Error("Edgegap relay session did not return player authorization tokens.");

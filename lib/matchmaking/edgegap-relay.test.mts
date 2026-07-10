@@ -77,6 +77,65 @@ test("creates an Edgegap relay session and maps host and guest credentials", asy
   }
 });
 
+test("uses the active authorization token when players share one public IP", async () => {
+  const originalToken = process.env.EDGEGAP_RELAY_TOKEN;
+  const originalFetch = globalThis.fetch;
+
+  process.env.EDGEGAP_RELAY_TOKEN = "test-relay-token";
+  globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    if (init?.method === "POST") {
+      return jsonResponse({
+        session_id: "relay-session-same-ip",
+        authorization_token: null,
+        status: "Creating",
+        ready: false,
+        linked: false,
+        error: null,
+        session_users: [],
+        relay: null,
+      });
+    }
+
+    return jsonResponse({
+      session_id: "relay-session-same-ip",
+      authorization_token: 22222222,
+      status: "Ready",
+      ready: true,
+      linked: true,
+      error: null,
+      session_users: [
+        { ip_address: "203.0.113.10", authorization_token: 11111111 },
+        { ip_address: "203.0.113.10", authorization_token: 33333333 },
+      ],
+      relay: {
+        ip: "198.51.100.7",
+        host: "relay.example.edgegap.net",
+        ports: {
+          server: { port: 30000, protocol: "UDP", link: "server" },
+          client: { port: 30001, protocol: "UDP", link: "client" },
+        },
+      },
+    });
+  };
+
+  try {
+    const relay = await createEdgegapRelaySession({
+      hostIp: "203.0.113.10",
+      guestIp: "203.0.113.10",
+    });
+
+    assert.equal(relay.hostConnectionInfo.user_token, 33333333);
+    assert.equal(relay.guestConnectionInfo.user_token, 33333333);
+  } finally {
+    if (originalToken === undefined) {
+      delete process.env.EDGEGAP_RELAY_TOKEN;
+    } else {
+      process.env.EDGEGAP_RELAY_TOKEN = originalToken;
+    }
+    globalThis.fetch = originalFetch;
+  }
+});
+
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status: 200,
