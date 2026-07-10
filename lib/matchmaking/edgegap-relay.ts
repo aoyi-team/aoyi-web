@@ -73,6 +73,20 @@ export async function createEdgegapRelaySession(input: CreateRelaySessionInput):
   return mapReadyRelaySession(ready);
 }
 
+export async function isEdgegapRelaySessionUsable(sessionId: string): Promise<boolean> {
+  const token = process.env.EDGEGAP_RELAY_TOKEN;
+  if (!token) {
+    throw new Error("Missing EDGEGAP_RELAY_TOKEN environment variable.");
+  }
+
+  try {
+    const session = await edgegapRequest<EdgegapRelaySessionResponse>(`/relays/sessions/${sessionId}`, token);
+    return Boolean(session.ready && session.linked && session.relay && !session.error);
+  } catch {
+    return false;
+  }
+}
+
 async function waitForRelayReady(sessionId: string, token: string): Promise<EdgegapRelaySessionResponse> {
   for (let attempt = 0; attempt < RELAY_READY_POLL_ATTEMPTS; attempt += 1) {
     const session = await edgegapRequest<EdgegapRelaySessionResponse>(`/relays/sessions/${sessionId}`, token);

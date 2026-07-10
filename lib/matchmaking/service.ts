@@ -7,7 +7,7 @@ import {
   type MatchResponse,
   type MatchRpcResult,
 } from "./contracts";
-import { createEdgegapRelaySession, type EdgegapRelayConnectionInfo } from "./edgegap-relay";
+import { createEdgegapRelaySession, isEdgegapRelaySessionUsable, type EdgegapRelayConnectionInfo } from "./edgegap-relay";
 import { clearCachedMatchStatus, getCachedMatchStatus, setCachedMatchStatus } from "./status-cache";
 import { createSupabaseAdminClient, createSupabaseUserClient } from "../supabase/server";
 
@@ -164,10 +164,6 @@ async function ensureEdgegapRelaySession(
     return response;
   }
 
-  if (hasEdgegapRelayPayload(response.room)) {
-    return response;
-  }
-
   const existing = relayProvisionPromises.get(response.roomId);
   if (existing) {
     return existing;
@@ -291,6 +287,14 @@ async function getExistingRelaySession(
     return null;
   }
 
+  if (relay.expires_at && Date.parse(relay.expires_at) <= Date.now()) {
+    return null;
+  }
+
+  if (!relay.provider_session_id || !(await isEdgegapRelaySessionUsable(relay.provider_session_id))) {
+    return null;
+  }
+
   return {
     provider: "edgegap",
     provider_session_id: relay.provider_session_id,
@@ -342,15 +346,6 @@ function normalizeIp(value: string): string {
   }
 
   return trimmed;
-}
-
-function hasEdgegapRelayPayload(room: unknown): boolean {
-  if (!isRecord(room)) {
-    return false;
-  }
-
-  const relaySession = room.relay_session;
-  return isRecord(relaySession) && relaySession.provider === "edgegap";
 }
 
 function withEdgegapRelayPayload(
