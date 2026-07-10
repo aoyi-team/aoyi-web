@@ -7,6 +7,7 @@ import {
   type MatchResponse,
   type MatchRpcResult,
 } from "./contracts";
+import { createEdgegapRelaySession, type EdgegapRelayConnectionInfo } from "./edgegap-relay";
 import { clearCachedMatchStatus, getCachedMatchStatus, setCachedMatchStatus } from "./status-cache";
 import { createSupabaseAdminClient, createSupabaseUserClient } from "../supabase/server";
 
@@ -14,11 +15,43 @@ type AuthenticatedUser = {
   id: string;
 };
 
+type MatchRoomRecord = {
+  id: string;
+  relay_provider: string;
+  relay_session_id: string | null;
+  host_user_id: string;
+  guest_user_id: string;
+};
+
+type MatchTicketIpRecord = {
+  user_id: string;
+  ip_address: string | null;
+};
+
+type RelaySessionRecord = {
+  provider: "edgegap";
+  provider_session_id: string;
+  host_connection_info: EdgegapRelayConnectionInfo;
+  guest_connection_info: EdgegapRelayConnectionInfo;
+  expires_at: string;
+};
+
+type RelaySessionPayload = {
+  provider: "edgegap";
+  provider_session_id: string;
+  host_connection_info: EdgegapRelayConnectionInfo;
+  guest_connection_info: EdgegapRelayConnectionInfo;
+  expires_at: string;
+};
+
+const relayProvisionPromises = new Map<string, Promise<MatchResponse>>();
+
 export async function startMatchFromRequest(request: Request): Promise<MatchResponse> {
   const token = requireBearerToken(request);
   const user = await authenticateBearerToken(token);
   const input = parseStartMatchBody(await request.json());
   const admin = createSupabaseAdminClient();
+  const clientIp = getClientIp(request);
 
   const { data, error } = await admin.rpc("join_random_match", {
     p_user_id: user.id,
@@ -28,13 +61,15 @@ export async function startMatchFromRequest(request: Request): Promise<MatchResp
     p_match_type: input.matchType,
     p_room_code: input.roomCode ?? null,
     p_protocol_version: input.protocolVersion,
+    p_ip_address: clientIp,
   });
 
   if (error) {
     throw new Error(error.message);
   }
 
-  return serializeMatchRpcResult(firstRpcResult(data));
+  const response = serializeMatchRpcResult(firstRpcResult(data));
+  return ensureEdgegapRelaySession(admin, response, clientIp);
 }
 
 export async function getMatchStatusFromRequest(request: Request): Promise<MatchResponse> {
@@ -57,7 +92,11 @@ export async function getMatchStatusFromRequest(request: Request): Promise<Match
     throw new Error(error.message);
   }
 
-  const response = serializeMatchRpcResult(firstRpcResult(data));
+  const response = await ensureEdgegapRelaySession(
+    admin,
+    serializeMatchRpcResult(firstRpcResult(data)),
+    getClientIp(request),
+  );
   setCachedMatchStatus(user.id, ticketId, response);
   return response;
 }
@@ -115,3 +154,219 @@ function firstRpcResult(data: unknown): MatchRpcResult {
 }
 
 export class AuthError extends Error {}
+
+async function ensureEdgegapRelaySession(
+  admin: ReturnType<typeof createSupabaseAdminClient>,
+  response: MatchResponse,
+  requestIp: string,
+): Promise<MatchResponse> {
+  if (response.status !== "matched" || !response.roomId) {
+    return response;
+  }
+
+  if (hasEdgegapRelayPayload(response.room)) {
+    return response;
+  }
+
+  const existing = relayProvisionPromises.get(response.roomId);
+  if (existing) {
+    return existing;
+  }
+
+  const provision = provisionEdgegapRelaySession(admin, response, requestIp)
+    .finally(() => relayProvisionPromises.delete(response.roomId!));
+  relayProvisionPromises.set(response.roomId, provision);
+  return provision;
+}
+
+async function provisionEdgegapRelaySession(
+  admin: ReturnType<typeof createSupabaseAdminClient>,
+  response: MatchResponse,
+  requestIp: string,
+): Promise<MatchResponse> {
+  if (!response.roomId) {
+    return response;
+  }
+
+  const { data: roomData, error: roomError } = await admin
+    .from("match_rooms")
+    .select("id, relay_provider, relay_session_id, host_user_id, guest_user_id")
+    .eq("id", response.roomId)
+    .single();
+
+  if (roomError) {
+    throw new Error(roomError.message);
+  }
+
+  const room = roomData as MatchRoomRecord;
+  if (room.relay_provider === "edgegap" && room.relay_session_id) {
+    const relaySession = await getExistingRelaySession(admin, room.relay_session_id);
+    if (relaySession) {
+      return {
+        ...response,
+        room: withEdgegapRelayPayload(response.room, room.relay_session_id, relaySession),
+      };
+    }
+  }
+
+  const playerIps = await getRoomPlayerIps(admin, room, requestIp);
+  const relay = await createEdgegapRelaySession({
+    hostIp: playerIps.hostIp,
+    guestIp: playerIps.guestIp,
+  });
+
+  const expiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+  let relaySessionId = room.relay_session_id;
+  const relayUpdate = {
+    provider: "edgegap",
+    provider_session_id: relay.providerSessionId,
+    host_connection_info: relay.hostConnectionInfo,
+    guest_connection_info: relay.guestConnectionInfo,
+    expires_at: expiresAt,
+  };
+
+  if (relaySessionId) {
+    const { error } = await admin
+      .from("relay_sessions")
+      .update(relayUpdate)
+      .eq("id", relaySessionId);
+    if (error) {
+      throw new Error(error.message);
+    }
+  } else {
+    const { data, error } = await admin
+      .from("relay_sessions")
+      .insert(relayUpdate)
+      .select("id")
+      .single();
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    relaySessionId = (data as { id: string }).id;
+  }
+
+  const { error: updateRoomError } = await admin
+    .from("match_rooms")
+    .update({
+      relay_provider: "edgegap",
+      relay_session_id: relaySessionId,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", response.roomId);
+
+  if (updateRoomError) {
+    throw new Error(updateRoomError.message);
+  }
+
+  return {
+    ...response,
+    room: withEdgegapRelayPayload(response.room, relaySessionId, {
+      provider: "edgegap",
+      provider_session_id: relay.providerSessionId,
+      host_connection_info: relay.hostConnectionInfo,
+      guest_connection_info: relay.guestConnectionInfo,
+      expires_at: expiresAt,
+    }),
+  };
+}
+
+async function getExistingRelaySession(
+  admin: ReturnType<typeof createSupabaseAdminClient>,
+  relaySessionId: string,
+): Promise<RelaySessionPayload | null> {
+  const { data, error } = await admin
+    .from("relay_sessions")
+    .select("provider, provider_session_id, host_connection_info, guest_connection_info, expires_at")
+    .eq("id", relaySessionId)
+    .single();
+
+  if (error || !data) {
+    return null;
+  }
+
+  const relay = data as RelaySessionRecord;
+  if (relay.provider !== "edgegap") {
+    return null;
+  }
+
+  return {
+    provider: "edgegap",
+    provider_session_id: relay.provider_session_id,
+    host_connection_info: relay.host_connection_info,
+    guest_connection_info: relay.guest_connection_info,
+    expires_at: relay.expires_at,
+  };
+}
+
+async function getRoomPlayerIps(
+  admin: ReturnType<typeof createSupabaseAdminClient>,
+  room: MatchRoomRecord,
+  fallbackIp: string,
+): Promise<{ hostIp: string; guestIp: string }> {
+  const { data, error } = await admin
+    .from("match_queue")
+    .select("user_id, ip_address")
+    .eq("room_id", room.id);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const tickets = (data ?? []) as MatchTicketIpRecord[];
+  const hostIp = tickets.find((ticket) => ticket.user_id === room.host_user_id)?.ip_address;
+  const guestIp = tickets.find((ticket) => ticket.user_id === room.guest_user_id)?.ip_address;
+
+  return {
+    hostIp: normalizeIp(hostIp ?? fallbackIp),
+    guestIp: normalizeIp(guestIp ?? fallbackIp),
+  };
+}
+
+function getClientIp(request: Request): string {
+  const forwardedFor = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  const realIp = request.headers.get("x-real-ip")?.trim();
+  const cfIp = request.headers.get("cf-connecting-ip")?.trim();
+  return normalizeIp(forwardedFor || realIp || cfIp || "1.1.1.1");
+}
+
+function normalizeIp(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "1.1.1.1";
+  }
+
+  if (trimmed.startsWith("::ffff:")) {
+    return trimmed.slice("::ffff:".length);
+  }
+
+  return trimmed;
+}
+
+function hasEdgegapRelayPayload(room: unknown): boolean {
+  if (!isRecord(room)) {
+    return false;
+  }
+
+  const relaySession = room.relay_session;
+  return isRecord(relaySession) && relaySession.provider === "edgegap";
+}
+
+function withEdgegapRelayPayload(
+  room: unknown,
+  relaySessionId: string | null,
+  relaySession: RelaySessionPayload,
+): Record<string, unknown> {
+  const base = isRecord(room) ? room : {};
+  return {
+    ...base,
+    relay_provider: "edgegap",
+    relay_session_id: relaySessionId,
+    relay_session: relaySession,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
