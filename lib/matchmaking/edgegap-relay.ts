@@ -70,7 +70,7 @@ export async function createEdgegapRelaySession(input: CreateRelaySessionInput):
   });
 
   const ready = await waitForRelayReady(created.session_id, token);
-  return mapReadyRelaySession(ready);
+  return mapReadyRelaySession(ready, input);
 }
 
 export async function isEdgegapRelaySessionUsable(sessionId: string): Promise<boolean> {
@@ -124,13 +124,18 @@ async function edgegapRequest<T>(path: string, token: string, init: RequestInit 
   return JSON.parse(text) as T;
 }
 
-function mapReadyRelaySession(session: EdgegapRelaySessionResponse): CreatedRelaySession {
+function mapReadyRelaySession(
+  session: EdgegapRelaySessionResponse,
+  input: CreateRelaySessionInput,
+): CreatedRelaySession {
   if (!session.relay || session.authorization_token === null) {
     throw new Error("Edgegap relay session is not ready.");
   }
 
-  const hostUser = session.session_users[0];
-  const guestUser = session.session_users[1];
+  const hostUser = session.session_users.find((user) => user.ip_address === input.hostIp);
+  const guestUser = input.hostIp === input.guestIp
+    ? session.session_users.find((user) => user !== hostUser && user.ip_address === input.guestIp)
+    : session.session_users.find((user) => user.ip_address === input.guestIp);
   if (!hostUser?.authorization_token || !guestUser?.authorization_token) {
     throw new Error("Edgegap relay session did not return player authorization tokens.");
   }
