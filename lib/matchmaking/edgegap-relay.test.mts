@@ -37,8 +37,8 @@ test("creates an Edgegap relay session and maps host and guest credentials", asy
       linked: true,
       error: null,
       session_users: [
-        { ip_address: "203.0.113.10", authorization_token: 11111111 },
         { ip_address: "203.0.113.11", authorization_token: 33333333 },
+        { ip_address: "203.0.113.10", authorization_token: 11111111 },
       ],
       relay: {
         ip: "198.51.100.7",
