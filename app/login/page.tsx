@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -26,6 +27,7 @@ function getAuthErrorMessage(message: string) {
 }
 
 export default function LoginPage() {
+  const router = useRouter();
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [remember, setRemember] = React.useState(false);
@@ -90,6 +92,7 @@ export default function LoginPage() {
       setTimeout(() => setShake(false), 300);
     } else {
       setSubmitMessage("登录成功");
+      router.push("/login-success");
     }
 
     setIsLoading(false);
