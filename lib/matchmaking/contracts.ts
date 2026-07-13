@@ -11,6 +11,10 @@ export type StartMatchInput = {
   roomCode?: string;
 };
 
+export type CloseMatchInput = {
+  roomId: string;
+};
+
 export type MatchRpcResult = {
   status: MatchStatus;
   ticket_id: string;
@@ -84,6 +88,19 @@ export function parseCancelMatchBody(body: unknown): { ticketId: string } {
   }
 
   return { ticketId };
+}
+
+export function parseCloseMatchBody(body: unknown): CloseMatchInput {
+  if (!isRecord(body)) {
+    throw new Error("request body must be an object");
+  }
+
+  const roomId = typeof body.roomId === "string" ? body.roomId.trim() : "";
+  if (!roomId) {
+    throw new Error("roomId is required");
+  }
+
+  return { roomId };
 }
 
 export function parseStatusSearchParams(searchParams: URLSearchParams): { ticketId: string } {

@@ -1,5 +1,6 @@
 import {
   extractBearerToken,
+  parseCloseMatchBody,
   parseCancelMatchBody,
   parseStartMatchBody,
   parseStatusSearchParams,
@@ -119,6 +120,24 @@ export async function cancelMatchFromRequest(request: Request): Promise<{ cancel
 
   clearCachedMatchStatus(user.id, ticketId);
   return { canceled: Boolean(data), ticketId };
+}
+
+export async function closeMatchFromRequest(request: Request): Promise<{ closed: boolean; roomId: string }> {
+  const token = requireBearerToken(request);
+  const user = await authenticateBearerToken(token);
+  const { roomId } = parseCloseMatchBody(await request.json());
+  const admin = createSupabaseAdminClient();
+
+  const { data, error } = await admin.rpc("close_match_room", {
+    p_user_id: user.id,
+    p_room_id: roomId,
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return { closed: Boolean(data), roomId };
 }
 
 function requireBearerToken(request: Request): string {
