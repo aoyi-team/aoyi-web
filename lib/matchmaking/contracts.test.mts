@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   extractBearerToken,
+  parseCloseMatchBody,
   parseCancelMatchBody,
   parseStartMatchBody,
   serializeMatchRpcResult,
@@ -49,6 +50,11 @@ test("rejects invalid match request values", () => {
 test("parses cancel match request", () => {
   assert.deepEqual(parseCancelMatchBody({ ticketId: "abc" }), { ticketId: "abc" });
   assert.throws(() => parseCancelMatchBody({ ticketId: "" }), /ticketId is required/);
+});
+
+test("parses close match request", () => {
+  assert.deepEqual(parseCloseMatchBody({ roomId: " room-1 " }), { roomId: "room-1" });
+  assert.throws(() => parseCloseMatchBody({ roomId: "" }), /roomId is required/);
 });
 
 test("serializes RPC waiting and matched results for Unity", () => {
