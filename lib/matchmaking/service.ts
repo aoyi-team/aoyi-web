@@ -77,12 +77,13 @@ export async function getMatchStatusFromRequest(request: Request): Promise<Match
   const token = requireBearerToken(request);
   const user = await authenticateBearerToken(token);
   const { ticketId } = parseStatusSearchParams(new URL(request.url).searchParams);
+  const admin = createSupabaseAdminClient();
+  await refreshWaitingMatchTicket(admin, user.id, ticketId);
+
   const cached = getCachedMatchStatus(user.id, ticketId);
   if (cached) {
     return cached;
   }
-
-  const admin = createSupabaseAdminClient();
 
   const { data, error } = await admin.rpc("get_match_status", {
     p_user_id: user.id,
@@ -100,6 +101,23 @@ export async function getMatchStatusFromRequest(request: Request): Promise<Match
   );
   setCachedMatchStatus(user.id, ticketId, response);
   return response;
+}
+
+async function refreshWaitingMatchTicket(
+  admin: ReturnType<typeof createSupabaseAdminClient>,
+  userId: string,
+  ticketId: string,
+): Promise<void> {
+  const { error } = await admin
+    .from("match_queue")
+    .update({ updated_at: new Date().toISOString() })
+    .eq("id", ticketId)
+    .eq("user_id", userId)
+    .eq("status", "waiting");
+
+  if (error) {
+    throw new Error(error.message);
+  }
 }
 
 export async function cancelMatchFromRequest(request: Request): Promise<{ canceled: boolean; ticketId: string }> {
